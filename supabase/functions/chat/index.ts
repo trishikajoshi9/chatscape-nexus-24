@@ -11,38 +11,138 @@ type ChatMessage = {
   content: string;
 };
 
-const persistChatAnalytics = async (messages: ChatMessage[], model: string) => {
-  const kvUrl = Deno.env.get("KV_REST_API_URL");
-  const kvToken = Deno.env.get("KV_REST_API_TOKEN");
+type TursoResponse = {
+  results?: Array<{
+    type?: string;
+    error?: { message?: string };
+  }>;
+};
 
-  if (!kvUrl || !kvToken) {
-    return;
+const DEFAULT_TURSO_DATABASE_URL =
+  "libsql://database-indigo-river-vercel-icfg-qivv1kbkreujp9aduvoqvzh0.aws-us-east-1.turso.io";
+
+const toHttpLibsqlUrl = (libsqlUrl: string) => {
+  if (libsqlUrl.startsWith("https://") || libsqlUrl.startsWith("http://")) {
+    return libsqlUrl;
   }
+  if (libsqlUrl.startsWith("libsql://")) {
+    return `https://${libsqlUrl.slice("libsql://".length)}`;
+  }
+  return `https://${libsqlUrl}`;
+};
 
-  const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
-  const words = lastUserMessage?.content.trim().split(/\s+/).filter(Boolean).length ?? 0;
-  const payload = {
-    createdAt: new Date().toISOString(),
-    model,
-    words,
-    messageCount: messages.length,
-    preview: lastUserMessage?.content.slice(0, 140) ?? "",
-  };
-
-  const key = `chat:analytics:${crypto.randomUUID()}`;
-  const response = await fetch(`${kvUrl}/set/${key}`, {
+const runTursoStatement = async (
+  libsqlUrl: string,
+  authToken: string,
+  sql: string,
+  args: Array<string | number | null> = [],
+) => {
+  const httpUrl = toHttpLibsqlUrl(libsqlUrl);
+  const response = await fetch(`${httpUrl}/v2/pipeline`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${kvToken}`,
+      Authorization: `Bearer ${authToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ value: JSON.stringify(payload) }),
+    body: JSON.stringify({
+      requests: [
+        {
+          type: "execute",
+          stmt: {
+            sql,
+            args,
+          },
+        },
+      ],
+    }),
   });
 
   if (!response.ok) {
-    const txt = await response.text();
-    console.error("Vercel KV persistence failed:", response.status, txt);
+    const text = await response.text();
+    throw new Error(`Turso request failed (${response.status}): ${text}`);
   }
+
+  const body = (await response.json()) as TursoResponse;
+  const firstResult = body.results?.[0];
+  if (firstResult?.type === "error") {
+    throw new Error(firstResult.error?.message || "Turso execution failed");
+  }
+};
+
+const ensureTursoTables = async (libsqlUrl: string, authToken: string) => {
+  await runTursoStatement(
+    libsqlUrl,
+    authToken,
+    `CREATE TABLE IF NOT EXISTS chat_analytics (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      model TEXT NOT NULL,
+      words INTEGER NOT NULL,
+      message_count INTEGER NOT NULL,
+      preview TEXT NOT NULL
+    )`,
+  );
+
+  await runTursoStatement(
+    libsqlUrl,
+    authToken,
+    `CREATE TABLE IF NOT EXISTS ollama_model_registry (
+      id TEXT PRIMARY KEY,
+      model_name TEXT NOT NULL UNIQUE,
+      storage_target TEXT NOT NULL,
+      sync_status TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+  );
+};
+
+const persistTursoAnalytics = async (messages: ChatMessage[], model: string) => {
+  const tursoUrl = Deno.env.get("TURSO_DATABASE_URL") || DEFAULT_TURSO_DATABASE_URL;
+  const tursoToken = Deno.env.get("TURSO_AUTH_TOKEN");
+
+  if (!tursoToken) {
+    return;
+  }
+
+  await ensureTursoTables(tursoUrl, tursoToken);
+
+  const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  const words = lastUserMessage?.content.trim().split(/\s+/).filter(Boolean).length ?? 0;
+  const now = new Date().toISOString();
+
+  await runTursoStatement(
+    tursoUrl,
+    tursoToken,
+    `INSERT INTO chat_analytics (id, created_at, model, words, message_count, preview)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      crypto.randomUUID(),
+      now,
+      model,
+      words,
+      messages.length,
+      lastUserMessage?.content.slice(0, 140) ?? "",
+    ],
+  );
+
+  const ollamaModel = Deno.env.get("OLLAMA_APP_BUILDER_MODEL") || "qwen2.5-coder:32b";
+  await runTursoStatement(
+    tursoUrl,
+    tursoToken,
+    `INSERT INTO ollama_model_registry (id, model_name, storage_target, sync_status, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(model_name) DO UPDATE SET
+       storage_target = excluded.storage_target,
+       sync_status = excluded.sync_status,
+       updated_at = excluded.updated_at`,
+    [
+      crypto.randomUUID(),
+      ollamaModel,
+      "cloud-storage",
+      "pending_download",
+      now,
+    ],
+  );
 };
 
 serve(async (req) => {
@@ -58,32 +158,29 @@ serve(async (req) => {
     const selectedModel = model || "google/gemini-3-flash-preview";
     const requestMessages = messages as ChatMessage[];
 
-    await persistChatAnalytics(requestMessages, selectedModel).catch((error) => {
-      console.error("Vercel KV error:", error);
+    await persistTursoAnalytics(requestMessages, selectedModel).catch((error) => {
+      console.error("Turso persistence error:", error);
     });
 
-    const response = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are TRITEC AI, a powerful coding assistant focused on premium product quality. You help users generate code, debug issues, and build production-ready features with UI/UX analysis. Provide clear, concise, and well-structured responses. When generating code, use markdown code blocks with language hints. Keep answers focused and actionable.",
-            },
-            ...requestMessages,
-          ],
-          stream: true,
-        }),
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({
+        model: selectedModel,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are TRITEC AI, a powerful coding assistant focused on premium product quality. You help users generate code, debug issues, and build production-ready features with UI/UX analysis. Provide clear, concise, and well-structured responses. When generating code, use markdown code blocks with language hints. Keep answers focused and actionable.",
+          },
+          ...requestMessages,
+        ],
+        stream: true,
+      }),
+    });
 
     if (!response.ok) {
       if (response.status === 429) {

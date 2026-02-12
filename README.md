@@ -73,13 +73,28 @@ To connect a domain, navigate to Project > Settings > Domains and click Connect 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
 
 
-## Optional Vercel KV analytics storage
+## Optional Turso (libsql) analytics + Ollama model registry
 
-The `supabase/functions/chat` edge function can persist lightweight chat analytics to Vercel KV.
+The `supabase/functions/chat` edge function can persist lightweight chat analytics and maintain an Ollama model registry in Turso.
 
 Configure these environment variables in Supabase functions settings:
 
-- `KV_REST_API_URL`
-- `KV_REST_API_TOKEN`
+- `TURSO_DATABASE_URL` (example: `libsql://database-indigo-river-vercel-icfg-qivv1kbkreujp9aduvoqvzh0.aws-us-east-1.turso.io`)
+- `TURSO_AUTH_TOKEN`
+- `OLLAMA_APP_BUILDER_MODEL` (optional, default: `qwen2.5-coder:32b`)
 
-If these variables are missing, the app still works normally and simply skips persistence.
+If `TURSO_AUTH_TOKEN` is missing, the app still works normally and simply skips persistence.
+
+### Download and sync Ollama model to cloud storage
+
+Use the helper script:
+
+```sh
+./scripts/sync-ollama-model.sh "qwen2.5-coder:32b" ./artifacts/qwen2.5-coder-32b.tar.gz
+```
+
+To auto-upload after export, provide an upload command:
+
+```sh
+STORAGE_UPLOAD_COMMAND='aws s3 cp "{file}" s3://my-bucket/ollama/' ./scripts/sync-ollama-model.sh
+```
