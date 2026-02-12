@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, Bot, User, Sparkles } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 type Message = {
   id: string;
@@ -9,23 +10,23 @@ type Message = {
 };
 
 interface ChatPanelProps {
-  ollamaUrl: string;
   model: string;
 }
 
-const ChatPanel = ({ ollamaUrl, model }: ChatPanelProps) => {
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
+
+const ChatPanel = ({ model }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: "⚡ **TRITEC AI Online** — I'm powered by Ollama. Ask me to generate code, debug issues, or build features. Let's create something epic!",
+      content: "⚡ **TRITEC AI Online** — Powered by multiple AI models (Gemini, GPT-5). Ask me to generate code, debug issues, or build features. Let's create something epic!",
       timestamp: new Date(),
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -44,57 +45,107 @@ const ChatPanel = ({ ollamaUrl, model }: ChatPanelProps) => {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${ollamaUrl}/api/chat`, {
+      const apiMessages = [...messages, userMsg]
+        .filter((m) => m.id !== "welcome")
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      const resp = await fetch(CHAT_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: [...messages, userMsg].map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          stream: true,
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ messages: apiMessages, model }),
       });
 
-      if (!response.ok || !response.body) throw new Error("Ollama connection failed");
+      if (!resp.ok) {
+        const errorData = await resp.json().catch(() => ({}));
+        throw new Error(errorData.error || `Request failed (${resp.status})`);
+      }
 
-      const reader = response.body.getReader();
+      if (!resp.body) throw new Error("No response body");
+
+      const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let assistantContent = "";
       const assistantId = crypto.randomUUID();
+      let textBuffer = "";
 
       setMessages((prev) => [
         ...prev,
         { id: assistantId, role: "assistant", content: "", timestamp: new Date() },
       ]);
 
-      while (true) {
+      let streamDone = false;
+      while (!streamDone) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n").filter(Boolean);
-        for (const line of lines) {
+        textBuffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+          let line = textBuffer.slice(0, newlineIndex);
+          textBuffer = textBuffer.slice(newlineIndex + 1);
+
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (line.startsWith(":") || line.trim() === "") continue;
+          if (!line.startsWith("data: ")) continue;
+
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === "[DONE]") {
+            streamDone = true;
+            break;
+          }
+
           try {
-            const parsed = JSON.parse(line);
-            if (parsed.message?.content) {
-              assistantContent += parsed.message.content;
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              assistantContent += content;
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId ? { ...m, content: assistantContent } : m
                 )
               );
             }
-          } catch {}
+          } catch {
+            textBuffer = line + "\n" + textBuffer;
+            break;
+          }
+        }
+      }
+
+      // Final flush
+      if (textBuffer.trim()) {
+        for (let raw of textBuffer.split("\n")) {
+          if (!raw) continue;
+          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+          if (raw.startsWith(":") || raw.trim() === "") continue;
+          if (!raw.startsWith("data: ")) continue;
+          const jsonStr = raw.slice(6).trim();
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              assistantContent += content;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: assistantContent } : m
+                )
+              );
+            }
+          } catch { /* ignore partial leftovers */ }
         }
       }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : "Unknown error";
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: `🔴 **Connection Error** — Could not reach Ollama at \`${ollamaUrl}\`. Make sure Ollama is running locally with: \`ollama serve\``,
+          content: `🔴 **Error** — ${errMsg}`,
           timestamp: new Date(),
         },
       ]);
@@ -122,7 +173,7 @@ const ChatPanel = ({ ollamaUrl, model }: ChatPanelProps) => {
             TRITEC AI
           </h2>
           <p className="text-xs text-muted-foreground font-mono">
-            {model} • {isLoading ? "thinking..." : "online"}
+            {model.split("/").pop()} • {isLoading ? "thinking..." : "online"}
           </p>
         </div>
         <div className={`ml-auto w-2 h-2 rounded-full ${isLoading ? "bg-neon-purple animate-pulse" : "bg-secondary"}`} />
@@ -156,7 +207,9 @@ const ChatPanel = ({ ollamaUrl, model }: ChatPanelProps) => {
                   : "glass-panel text-foreground"
               }`}
             >
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+              <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-muted/50 [&_pre]:rounded-lg [&_pre]:p-3 [&_code]:text-primary [&_code]:font-mono [&_code]:text-xs">
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
+              </div>
               <span className="text-[10px] text-muted-foreground mt-2 block font-mono">
                 {msg.timestamp.toLocaleTimeString()}
               </span>
@@ -184,7 +237,6 @@ const ChatPanel = ({ ollamaUrl, model }: ChatPanelProps) => {
       <div className="p-4 border-t border-border">
         <div className="glass-panel rounded-lg border border-border focus-within:border-primary/50 focus-within:border-glow transition-all duration-300">
           <textarea
-            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
