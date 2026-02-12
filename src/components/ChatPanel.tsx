@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, Bot, User, Sparkles } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { Send, Loader2, Bot, User, Sparkles, BarChart3 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 type Message = {
@@ -20,13 +20,21 @@ const ChatPanel = ({ model }: ChatPanelProps) => {
     {
       id: "welcome",
       role: "assistant",
-      content: "⚡ **TRITEC AI Online** — Powered by multiple AI models (Gemini, GPT-5). Ask me to generate code, debug issues, or build features. Let's create something epic!",
+      content:
+        "⚡ **TRITEC AI Online** — Premium multi-model assistant with deeper analysis. Ask me to architect systems, optimize UI, or implement production-grade features.",
       timestamp: new Date(),
     },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const promptAnalysis = useMemo(() => {
+    const words = input.trim() ? input.trim().split(/\s+/).length : 0;
+    const chars = input.length;
+    const complexity = words > 80 ? "Advanced" : words > 30 ? "Detailed" : "Simple";
+    return { words, chars, complexity };
+  }, [input]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -104,38 +112,14 @@ const ChatPanel = ({ model }: ChatPanelProps) => {
               assistantContent += content;
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === assistantId ? { ...m, content: assistantContent } : m
-                )
+                  m.id === assistantId ? { ...m, content: assistantContent } : m,
+                ),
               );
             }
           } catch {
-            textBuffer = line + "\n" + textBuffer;
+            textBuffer = `${line}\n${textBuffer}`;
             break;
           }
-        }
-      }
-
-      // Final flush
-      if (textBuffer.trim()) {
-        for (let raw of textBuffer.split("\n")) {
-          if (!raw) continue;
-          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-          if (raw.startsWith(":") || raw.trim() === "") continue;
-          if (!raw.startsWith("data: ")) continue;
-          const jsonStr = raw.slice(6).trim();
-          if (jsonStr === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-            if (content) {
-              assistantContent += content;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId ? { ...m, content: assistantContent } : m
-                )
-              );
-            }
-          } catch { /* ignore partial leftovers */ }
         }
       }
     } catch (error) {
@@ -163,23 +147,40 @@ const ChatPanel = ({ model }: ChatPanelProps) => {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Chat Header */}
-      <div className="glass-panel border-b border-border px-4 py-3 flex items-center gap-3">
+      <div className="glass-panel border-b border-border px-4 py-3.5 flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30 animate-pulse-glow">
           <Bot className="w-4 h-4 text-primary" />
         </div>
         <div>
-          <h2 className="font-display text-sm font-semibold text-foreground text-glow-cyan">
-            TRITEC AI
-          </h2>
-          <p className="text-xs text-muted-foreground font-mono">
-            {model.split("/").pop()} • {isLoading ? "thinking..." : "online"}
-          </p>
+          <h2 className="font-display text-sm font-semibold text-foreground text-glow-cyan">TRITEC AI</h2>
+          <p className="text-xs text-muted-foreground font-mono">{model.split("/").pop()} • {isLoading ? "thinking" : "ready"}</p>
         </div>
         <div className={`ml-auto w-2 h-2 rounded-full ${isLoading ? "bg-neon-purple animate-pulse" : "bg-secondary"}`} />
       </div>
 
-      {/* Messages */}
+      <div className="p-3 border-b border-border/70 bg-card/50">
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5">
+          <p className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">Prompt Analysis</p>
+          <div className="grid grid-cols-3 gap-2 text-[11px]">
+            <div className="rounded-lg bg-background/70 p-2 border border-border/70">
+              <p className="text-muted-foreground">Words</p>
+              <p className="font-semibold">{promptAnalysis.words}</p>
+            </div>
+            <div className="rounded-lg bg-background/70 p-2 border border-border/70">
+              <p className="text-muted-foreground">Chars</p>
+              <p className="font-semibold">{promptAnalysis.chars}</p>
+            </div>
+            <div className="rounded-lg bg-background/70 p-2 border border-border/70 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-muted-foreground">Depth</p>
+                <p className="font-semibold">{promptAnalysis.complexity}</p>
+              </div>
+              <BarChart3 className="w-3.5 h-3.5 text-primary" />
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scanline">
         {messages.map((msg, i) => (
           <div
@@ -189,30 +190,20 @@ const ChatPanel = ({ model }: ChatPanelProps) => {
           >
             <div
               className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border ${
-                msg.role === "user"
-                  ? "bg-accent/20 border-accent/30"
-                  : "bg-primary/20 border-primary/30"
+                msg.role === "user" ? "bg-accent/20 border-accent/30" : "bg-primary/20 border-primary/30"
               }`}
             >
-              {msg.role === "user" ? (
-                <User className="w-3.5 h-3.5 text-accent" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-              )}
+              {msg.role === "user" ? <User className="w-3.5 h-3.5 text-accent" /> : <Sparkles className="w-3.5 h-3.5 text-primary" />}
             </div>
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-3 text-sm font-body leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-accent/10 border border-accent/20 text-foreground"
-                  : "glass-panel text-foreground"
+              className={`max-w-[85%] rounded-xl px-4 py-3 text-sm font-body leading-relaxed ${
+                msg.role === "user" ? "bg-accent/10 border border-accent/20 text-foreground" : "glass-panel text-foreground"
               }`}
             >
               <div className="prose prose-sm prose-invert max-w-none [&_pre]:bg-muted/50 [&_pre]:rounded-lg [&_pre]:p-3 [&_code]:text-primary [&_code]:font-mono [&_code]:text-xs">
                 <ReactMarkdown>{msg.content}</ReactMarkdown>
               </div>
-              <span className="text-[10px] text-muted-foreground mt-2 block font-mono">
-                {msg.timestamp.toLocaleTimeString()}
-              </span>
+              <span className="text-[10px] text-muted-foreground mt-2 block font-mono">{msg.timestamp.toLocaleTimeString()}</span>
             </div>
           </div>
         ))}
@@ -233,21 +224,18 @@ const ChatPanel = ({ model }: ChatPanelProps) => {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
       <div className="p-4 border-t border-border">
-        <div className="glass-panel rounded-lg border border-border focus-within:border-primary/50 focus-within:border-glow transition-all duration-300">
+        <div className="glass-panel rounded-xl border border-border focus-within:border-primary/50 focus-within:border-glow transition-all duration-300">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask TRITEC AI to build something..."
+            placeholder="Ask TRITEC AI to build premium production features..."
             className="w-full bg-transparent px-4 py-3 text-sm font-body text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[44px] max-h-[120px]"
             rows={1}
           />
           <div className="flex items-center justify-between px-3 pb-2">
-            <span className="text-[10px] text-muted-foreground font-mono">
-              Shift+Enter for new line
-            </span>
+            <span className="text-[10px] text-muted-foreground font-mono">Shift+Enter for new line</span>
             <button
               onClick={sendMessage}
               disabled={!input.trim() || isLoading}

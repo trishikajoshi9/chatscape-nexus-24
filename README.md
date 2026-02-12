@@ -71,3 +71,15 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+
+## Optional Vercel KV analytics storage
+
+The `supabase/functions/chat` edge function can persist lightweight chat analytics to Vercel KV.
+
+Configure these environment variables in Supabase functions settings:
+
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
+
+If these variables are missing, the app still works normally and simply skips persistence.
