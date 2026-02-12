@@ -1,12 +1,38 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from "react";
+import Sidebar from "../components/Sidebar";
+import ChatPanel from "../components/ChatPanel";
+import CodePreview from "../components/CodePreview";
+import SettingsModal from "../components/SettingsModal";
 
 const Index = () => {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [model, setModel] = useState("llama3.2");
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <div className="flex h-screen bg-background overflow-hidden grid-bg">
+      {/* Sidebar */}
+      <Sidebar onSettingsClick={() => setSettingsOpen(true)} />
+
+      {/* Chat Panel */}
+      <div className="w-[400px] border-r border-border shrink-0">
+        <ChatPanel ollamaUrl={ollamaUrl} model={model} />
       </div>
+
+      {/* Code Preview */}
+      <div className="flex-1 min-w-0">
+        <CodePreview />
+      </div>
+
+      {/* Settings Modal */}
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        ollamaUrl={ollamaUrl}
+        setOllamaUrl={setOllamaUrl}
+        model={model}
+        setModel={setModel}
+      />
     </div>
   );
 };
